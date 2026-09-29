@@ -13,8 +13,28 @@ except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
 BOT_TOKEN = "8873928485:AAE6uAy_40mJq3doO8OVi8AwzFWM2I3Ue5o"
-ADMIN_CHAT_ID = 7203467559  # 只有妳本人能操作
 GAS_URL = "https://script.google.com/macros/s/AKfycbxlkgD0qFHvei_x0li8l9OtEl9-jFoirdf_Q0iwKrOVLokLXdY7-hIDkyE8h6Q0Bumn/exec"
+
+# ==================== 權限名單設定區 ====================
+# 最高主管名單（可建檔、可查閱全部資料）：
+ADMIN_USERS = [
+    8428414321,   # 妳的 ID
+]
+
+# 一般查閱成員名單（僅可瀏覽客戶總表與資料卡，無建檔權限）：
+# 若有新業務或助理，讓對方去 @userinfobot 取得數字 ID 後加入括號中（用逗號隔開）
+VIEWER_USERS = [
+    # 123456789,
+]
+
+# 檢查是否為主管
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_USERS
+
+# 檢查是否具備系統存取權（主管或查閱成員）
+def has_access(user_id: int) -> bool:
+    return user_id in ADMIN_USERS or user_id in VIEWER_USERS
+# =======================================================
 
 local_clients = {}
 
@@ -53,20 +73,26 @@ async def safe_edit_text(query, text, reply_markup=None):
 
 # 主選單
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️ 本系統為個人商業 CRM 機密資料庫，未授權無法存取。")
+    user_id = update.effective_user.id
+    if not has_access(user_id):
+        await update.message.reply_text("⚠️ 本系統為內部商業 CRM 機密資料庫，未授權人員無法存取。")
         return
 
-    text = "💼 *【商業客戶管理系統 (CRM)】*\n請選擇操作功能："
+    identity_text = "👑 *主管模式*" if is_admin(user_id) else "👀 *成員查閱模式*"
+    text = f"💼 *【商業客戶管理系統 (CRM)】*\n身分：{identity_text}\n請選擇操作功能："
     await update.message.reply_text(text, reply_markup=get_main_menu_markup(), parse_mode="Markdown")
 
-# 建檔指令：/client 姓名 電話 公司職稱 需求備註
+# 建檔指令：只有主管有權限
 async def add_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_clients
-    if update.effective_user.id != ADMIN_CHAT_ID:
-        await update.message.reply_text("⚠️ 權限不足。")
+    user_id = update.effective_user.id
+
+    # 1. 權限檢查：僅主管可建檔
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ *權限不足*：您僅具備客戶資料查閱權限，無法新增建檔！", parse_mode="Markdown")
         return
 
+    # 2. 格式檢查
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
@@ -101,7 +127,7 @@ async def add_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏢 公司/職稱：{company}\n"
         f"📝 需求備註：{notes}\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"資料已同步存入 Google 試算表。"
+        f"資料已同步存入 Google 試算表「商業客戶資料庫」。"
     )
     await update.message.reply_text(reply_text, parse_mode="Markdown")
 
@@ -113,37 +139,56 @@ async def add_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "notes": notes
     }))
 
-# 按鈕處理
+# 按鈕回調
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global local_clients
     query = update.callback_query
     data = query.data
+    user_id = query.from_user.id
 
     try:
         await query.answer()
     except Exception:
         pass
 
+    # 攔截所有未授權按鈕點擊
+    if not has_access(user_id):
+        try:
+            await query.answer("⚠️ 未獲授權，無法存取內部資料！", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    identity_text = "👑 *主管模式*" if is_admin(user_id) else "👀 *成員查閱模式*"
+
     if data == "back_main":
-        text = "💼 *【商業客戶管理系統 (CRM)】*\n請選擇操作功能："
+        text = f"💼 *【商業客戶管理系統 (CRM)】*\n身分：{identity_text}\n請選擇操作功能："
         await safe_edit_text(query, text, get_main_menu_markup())
         return
 
     elif data == "show_guide":
-        text = (
-            "📖 *【快速建檔指引】*\n"
-            "隨時在對話框直接輸入：\n"
-            "`/client 姓名 電話 公司職稱 需求備註`\n\n"
-            "例如：\n"
-            "`/client 陳總 0922888999 創世紀投資 對系統導入感興趣`"
-        )
+        if is_admin(user_id):
+            text = (
+                "📖 *【主管快速建檔指引】*\n"
+                "隨時在對話框直接輸入：\n"
+                "`/client 姓名 電話 公司職稱 需求備註`\n\n"
+                "例如：\n"
+                "`/client 陳總 0922888999 創世紀投資 對系統導入感興趣`"
+            )
+        else:
+            text = (
+                "📖 *【查閱成員使用指引】*\n"
+                "您當前為查閱權限：\n"
+                "• 可點擊「💼 查看客戶總表」瀏覽客戶資料\n"
+                "• 如需新增或修改資料，請聯繫主管執行。"
+            )
         keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
         await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
         return
 
     elif data == "list_clients":
         if not local_clients:
-            text = "💼 *【客戶總表】*\n目前資料庫尚無客戶資料！\n請直接輸入 `/client` 快速新增。"
+            text = "💼 *【客戶總表】*\n目前資料庫尚無客戶資料！"
             keyboard = [[InlineKeyboardButton("⬅️ 回主選單", callback_data="back_main")]]
             await safe_edit_text(query, text, InlineKeyboardMarkup(keyboard))
             return
@@ -161,7 +206,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c_id = int(data.split("_")[2])
         client = local_clients.get(c_id)
         if not client:
-            await safe_edit_text(query, "查無此客戶資料！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回列表", callback_data="list_clients")]]))
+            await safe_edit_text(query, "查無此客戶資料！", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️️ 返回列表", callback_data="list_clients")]]))
             return
 
         text = (
@@ -197,28 +242,27 @@ async def run_bot():
     
     commands = [
         BotCommand("menu", "開啟 CRM 主選單"),
-        BotCommand("client", "新增客戶 (例: /client 姓名 電話 公司 備註)"),
+        BotCommand("client", "新增客戶 (僅限主管)"),
     ]
     app.add_handler(CommandHandler("start", menu))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("client", add_client))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    # 1. 啟動 Web Server 給 Render / UptimeRobot 存活用
+    # 啟動 Web 探針供 Render 保活
     await start_web_server()
 
-    # 2. 初始化與啟動 Telegram Bot
+    # 初始化 Telegram 機器人
     await app.initialize()
     await app.bot.set_my_commands(commands)
     await app.start()
     await app.updater.start_polling()
 
-    # 3. 背景同步試算表歷史客戶
+    # 背景同步資料庫
     asyncio.create_task(bg_sync_clients())
 
     print("商業 CRM 機器人已成功在線運作中！")
 
-    # 保持異步迴圈長跑
     stop_event = asyncio.Event()
     await stop_event.wait()
 
